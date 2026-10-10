@@ -11,7 +11,7 @@ Created by **[Sewanode](https://github.com/Sewanode)**
 - [Overview](#-overview)
 - [Features](#-features)
 - [Requirements](#-requirements)
-- [Quick Start](#-quick-start)
+- [One-Liner Install](#-one-liner-install)
 - [CLI Arguments](#-cli-arguments)
 - [What Gets Installed](#-what-gets-installed)
 - [SSL Configuration](#-ssl-configuration)
@@ -63,25 +63,51 @@ No more manual clicking around the admin panel. Just run one command and get a f
 
 ---
 
-## 🚀 Quick Start
+## ⚡ One-Liner Install
+
+No download, no `chmod +x`. Just run one command as **root**:
+
+### 🔒 With SSL (Production — recommended)
 
 ```bash
-# 1. Download the installer
-curl -o installer.sh https://raw.githubusercontent.com/Sewanode/pterodactyl-installer/main/installer.sh
-chmod +x installer.sh
-
-# 2. Run it
-./installer.sh \
+bash <(curl -fsSL https://raw.githubusercontent.com/Sewanode/pterodactyl-installer/main/installer.sh) \
   --domainp panel.yourdomain.com \
   --domainw node.yourdomain.com \
   --email admin@yourdomain.com \
-  --pass "YourStrongPassword123" \
+  --pass 'YourStrongPassword123' \
   --dport 2141 \
   --sftpport 2142 \
   --ssl
 ```
 
-Done. The installer will print a summary at the end with your panel URL, admin credentials, and Wings status.
+### 🌐 Without SSL (Development / Internal)
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Sewanode/pterodactyl-installer/main/installer.sh) \
+  --domainp panel.yourdomain.com \
+  --domainw node.yourdomain.com \
+  --email admin@yourdomain.com \
+  --pass 'YourStrongPassword123'
+```
+
+### 🐚 Alternative — Pipe into bash
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Sewanode/pterodactyl-installer/main/installer.sh | bash -s -- \
+  --domainp panel.yourdomain.com \
+  --domainw node.yourdomain.com \
+  --email admin@yourdomain.com \
+  --pass 'YourStrongPassword123' \
+  --ssl
+```
+
+> 💡 **Tip:** Always wrap the `--pass` value in **single quotes** (`'...'`) so symbols like `$`, `!`, `&` don't get mangled by bash.
+
+### 🧪 Dry-run with `--help`
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Sewanode/pterodactyl-installer/main/installer.sh) --help
+```
 
 ---
 
@@ -97,31 +123,8 @@ Done. The installer will print a summary at the end with your panel URL, admin c
 | `--sftpport` | ❌ | `2482` | Wings SFTP port |
 | `--timezone` | ❌ | `Asia/Jakarta` | Panel timezone |
 | `--ssl` | ❌ | `false` | Enable Let's Encrypt SSL provisioning |
-| `--no-id-mirror` | ❌ | `false` | Skip switching to Indonesian APT mirror |
-
-### Example — Production with SSL
-
-```bash
-./installer.sh \
-  --domainp panel.mygame.com \
-  --domainw node.mygame.com \
-  --email admin@mygame.com \
-  --pass "S3cur3P@ss!" \
-  --dport 2141 \
-  --sftpport 2142 \
-  --timezone "Asia/Jakarta" \
-  --ssl
-```
-
-### Example — Development without SSL
-
-```bash
-./installer.sh \
-  --domainp panel.local \
-  --domainw node.local \
-  --email admin@local.test \
-  --pass "dev123"
-```
+| `--no-id-mirror` | ❌ | `false` | Skip Indonesian APT mirror |
+| `--help` | ❌ | — | Show usage |
 
 ---
 
