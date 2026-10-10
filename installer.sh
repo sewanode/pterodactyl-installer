@@ -1,12 +1,50 @@
 #!/usr/bin/env bash
-pkill apt || true
+#
+#  Pterodactyl Auto-Installer
+#  -------------------------------------------------------------
+#  One-command installer for Pterodactyl Panel + Wings with
+#  automatic Let's Encrypt SSL, node auto-registration, and
+#  Indonesian APT mirror support.
+#
+#  Author  : Sewanode <https://github.com/Sewanode>
+#  Version : 1.0.0
+#  License : MIT
+#
+#  Usage:
+#    bash <(curl -fsSL https://raw.githubusercontent.com/Sewanode/pterodactyl-installer/main/installer.sh) \
+#      --domainp panel.example.com \
+#      --domainw node.example.com \
+#      --email admin@example.com \
+#      --pass 'StrongPassword' \
+#      --ssl
+#  -------------------------------------------------------------
+#
 set -euo pipefail
 
 # --- Colors ---
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 die()  { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 info() { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
+banner() {
+  echo -e "${CYAN}"
+  cat << 'EOF'
+  ____                  _            _       _
+ |  _ \ _   _  ___ _ __| |__   ___  | | ___ | |_
+ | |_) | | | |/ _ \ '__| '_ \ / _ \ | |/ _ \| __|
+ |  __/| |_| |  __/ |  | |_) |  __/ | | (_) | |_
+ |_|    \__, |\___|_|  |_.__/ \___| |_|\___/ \__|
+        |___/
+      Pterodactyl Auto-Installer  ·  by Sewanode
+EOF
+  echo -e "${NC}"
+}
+
+# --- Root check ---
+[[ "$EUID" -ne 0 ]] && die "Script ini harus dijalankan sebagai root."
+
+# --- Kill stuck apt ---
+pkill apt || true
 
 # --- Default Parameters ---
 DOMAIN_PANEL=""
@@ -22,36 +60,57 @@ USE_ID_MIRROR=true
 # --- CLI Arguments Parser ---
 while [[ "$#" -gt 0 ]]; do
   case $1 in
-    --domainp)  DOMAIN_PANEL="$2"; shift ;;
-    --domainw)  DOMAIN_WINGS="$2"; shift ;;
-    --email)    ADMIN_EMAIL="$2"; shift ;;
-    --pass)     ADMIN_PASS="$2"; shift ;;
-    --dport)    DPORT="$2"; shift ;;
-    --sftpport) SFTPPORT="$2"; shift ;;
-    --timezone) TIMEZONE="$2"; shift ;;
-    --ssl)      ENABLE_SSL=true ;;
+    --domainp)      DOMAIN_PANEL="$2"; shift ;;
+    --domainw)      DOMAIN_WINGS="$2"; shift ;;
+    --email)        ADMIN_EMAIL="$2"; shift ;;
+    --pass)         ADMIN_PASS="$2"; shift ;;
+    --dport)        DPORT="$2"; shift ;;
+    --sftpport)     SFTPPORT="$2"; shift ;;
+    --timezone)     TIMEZONE="$2"; shift ;;
+    --ssl)          ENABLE_SSL=true ;;
     --no-id-mirror) USE_ID_MIRROR=false ;;
+    -h|--help)
+      cat << 'EOF'
+Usage:
+  installer.sh --domainp <panel.domain> --domainw <node.domain>
+               --email <admin@email> --pass <secret>
+               [--dport <port>] [--sftpport <port>]
+               [--timezone <tz>] [--ssl] [--no-id-mirror]
+
+Flags:
+  --domainp       Panel domain                    (required)
+  --domainw       Wings/Node domain               (required)
+  --email         Admin email + Let's Encrypt     (required)
+  --pass          Admin password                  (required)
+  --dport         Wings daemon port               (default: 2481)
+  --sftpport      Wings SFTP port                 (default: 2482)
+  --timezone      Panel timezone                  (default: Asia/Jakarta)
+  --ssl           Enable Let's Encrypt SSL        (default: false)
+  --no-id-mirror  Skip Indonesian APT mirror
+EOF
+      exit 0 ;;
     *) echo "Unknown parameter: $1"; exit 1 ;;
   esac
   shift
 done
 
 if [[ -z "$DOMAIN_PANEL" || -z "$DOMAIN_WINGS" || -z "$ADMIN_EMAIL" || -z "$ADMIN_PASS" ]]; then
-  echo "Usage: $0 --domainp <panel.domain> --domainw <node.domain> --email <admin@email> --pass <secret> --dport <port> --sftpport <port> [--ssl] [--no-id-mirror]"
-  exit 1
+  die "Parameter kurang. Jalankan dengan --help untuk melihat panduan."
 fi
+
+banner
 
 # --- Non-interactive apt ---
 export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
 export NEEDRESTART_SUSPEND=1
 
-# Suppress needrestart prompt (kalau ada)
 if [[ -f /etc/needrestart/needrestart.conf ]]; then
-  sed -i "s/^#\?\$nrconf{restart} = .*/\$nrconf{restart} = 'a';/" /etc/needrestart/needrestart.conf || true
+  sed -i "s/^#\?\$nrconf{restart} = .*/\$nrconf{restart} = 'a';/" \
+    /etc/needrestart/needrestart.conf || true
 fi
 
-# Deteksi OS & Arsitektur
+# --- OS & Arch detection ---
 ARCH=$(uname -m)
 case "$ARCH" in
   x86_64) WINGS_ARCH="amd64" ;;
@@ -64,25 +123,21 @@ OS_ID=$(echo "$ID" | tr '[:upper:]' '[:lower:]')
 OS_CODENAME=$(lsb_release -cs 2>/dev/null || echo "$VERSION_CODENAME")
 
 info "[1/8] Menyiapkan repositori sistem..."
-# --- Ganti mirror ke Indonesia biar low latency ---
+
+# --- Indonesian APT mirror ---
 if [[ "$USE_ID_MIRROR" == true ]]; then
   info "Mengganti mirror apt ke Indonesia (gunakan --no-id-mirror untuk skip)..."
   case "$OS_ID" in
     ubuntu)
       ID_MIRROR="http://id.archive.ubuntu.com/ubuntu"
-      # Cek dulu mirror ID reachable
       if curl -sI --max-time 5 "${ID_MIRROR}/dists/${OS_CODENAME}/Release" >/dev/null 2>&1 \
          || curl -sI --max-time 5 "${ID_MIRROR}/dists/stable/Release" >/dev/null 2>&1; then
-        # Format deb822 (Ubuntu 24.04+)
-        if [[ -f /etc/apt/sources.list.d/ubuntu.sources ]]; then
+        [[ -f /etc/apt/sources.list.d/ubuntu.sources ]] && \
           sed -i -E "s#https?://(archive|security|ports)\.ubuntu\.com/ubuntu#${ID_MIRROR}#g" \
             /etc/apt/sources.list.d/ubuntu.sources || true
-        fi
-        # Format classic
-        if [[ -f /etc/apt/sources.list ]]; then
+        [[ -f /etc/apt/sources.list ]] && \
           sed -i -E "s#https?://(archive|security|ports)\.ubuntu\.com/ubuntu#${ID_MIRROR}#g" \
             /etc/apt/sources.list || true
-        fi
         info "Mirror diganti ke ${ID_MIRROR}"
       else
         warn "Mirror ID tidak reachable, skip penggantian mirror."
@@ -91,31 +146,27 @@ if [[ "$USE_ID_MIRROR" == true ]]; then
     debian)
       ID_MIRROR="http://ftp.id.debian.org/debian"
       if curl -sI --max-time 5 "${ID_MIRROR}/dists/${OS_CODENAME}/Release" >/dev/null 2>&1; then
-        if [[ -f /etc/apt/sources.list ]]; then
+        [[ -f /etc/apt/sources.list ]] && \
           sed -i -E "s#https?://deb\.debian\.org/debian#${ID_MIRROR}#g" /etc/apt/sources.list || true
-        fi
-        if [[ -f /etc/apt/sources.list.d/debian.sources ]]; then
+        [[ -f /etc/apt/sources.list.d/debian.sources ]] && \
           sed -i -E "s#https?://deb\.debian\.org/debian#${ID_MIRROR}#g" /etc/apt/sources.list.d/debian.sources || true
-        fi
         info "Mirror diganti ke ${ID_MIRROR}"
       else
         warn "Mirror ID tidak reachable, skip penggantian mirror."
       fi
       ;;
-    *)
-      warn "OS '$OS_ID' tidak dikenal untuk auto-mirror, skip."
-      ;;
+    *) warn "OS '$OS_ID' tidak dikenal untuk auto-mirror, skip." ;;
   esac
 fi
 
 apt-get update -y -qq
 apt-get install -y -qq curl apt-transport-https lsb-release ca-certificates gnupg git zip unzip tar cron jq
 
-# Repo PHP Sury
+# --- PHP Sury repo ---
 curl -sSLo /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg
 echo "deb https://packages.sury.org/php/ ${OS_CODENAME} main" > /etc/apt/sources.list.d/php.list
 
-# Repo Docker Resmi
+# --- Docker official repo ---
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/${OS_ID}/gpg | gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
 chmod a+r /etc/apt/keyrings/docker.gpg
@@ -191,7 +242,7 @@ php artisan p:user:make \
 chown -R www-data:www-data /var/www/pterodactyl/*
 (crontab -l 2>/dev/null || true; echo "* * * * * php /var/www/pterodactyl/artisan schedule:run >> /dev/null 2>&1") | sort -u | crontab -
 
-# Service Queue Worker (pteroq)
+# --- Queue Worker ---
 cat << 'EOF' > /etc/systemd/system/pteroq.service
 [Unit]
 Description=Pterodactyl Queue Worker
@@ -212,7 +263,7 @@ EOF
 systemctl daemon-reload
 systemctl enable --now pteroq
 
-# Vhost Nginx (HTTP only, sebelum SSL)
+# --- Nginx vhost (HTTP only, pre-SSL) ---
 cat << EOF > /etc/nginx/sites-available/pterodactyl.conf
 server {
     listen 80;
@@ -363,7 +414,7 @@ if [[ -z "$API_TOKEN" ]]; then
 fi
 info "API Token berhasil dibuat (${#API_TOKEN} chars)."
 
-# --- Helper: API request ke panel via localhost ---
+# --- API helper (bypass DNS + TLS hostname mismatch) ---
 API_PORT=80
 [[ "$APP_SCHEME" == "https" ]] && API_PORT=443
 
@@ -388,7 +439,7 @@ api_request() {
 
 info "[7/8] Mendaftarkan Location & Node ke Panel API..."
 
-# 1. Create Location
+# 1. Location
 LOC_RESP=$(api_request POST "/api/application/locations" '{"short": "local", "long": "Local Node"}')
 LOC_ID=$(echo "$LOC_RESP" | jq -r '.attributes.id // empty')
 if [[ -z "$LOC_ID" ]]; then
@@ -397,7 +448,7 @@ if [[ -z "$LOC_ID" ]]; then
 fi
 info "Location dibuat dengan ID: ${LOC_ID}"
 
-# Hitung RAM & Disk Server (MB)
+# RAM & Disk calc
 TOTAL_RAM=$(free -m | awk '/Mem:/ {print $2}')
 TOTAL_DISK=$(df -m / | awk 'NR==2 {print $2}')
 RAM_ALLOC=$(( TOTAL_RAM > 1024 ? TOTAL_RAM - 512 : 512 ))
@@ -406,7 +457,7 @@ DISK_ALLOC=$(( TOTAL_DISK > 5120 ? TOTAL_DISK - 2048 : 2048 ))
 SCHEME_VAL="http"
 [[ "$ENABLE_SSL" == true ]] && SCHEME_VAL="https"
 
-# 2. Create Node
+# 2. Node
 NODE_PAYLOAD=$(cat << EOF
 {
   "name": "Node-1",
@@ -433,14 +484,14 @@ if [[ -z "$NODE_ID" ]]; then
 fi
 info "Node dibuat dengan ID: ${NODE_ID}"
 
-# 3. Fetch Node Configuration
+# 3. Fetch config
 NODE_CONFIG=$(api_request GET "/api/application/nodes/${NODE_ID}/configuration")
 if ! echo "$NODE_CONFIG" | jq -e '.uuid' >/dev/null 2>&1; then
   echo "--- RAW RESPONSE ---"; echo "$NODE_CONFIG"; echo "--------------------"
   die "Gagal fetch node configuration."
 fi
 
-# 3a. Inject SSL cert path ke config Wings (kalau SSL aktif)
+# 3a. SSL cert injection
 if [[ "$ENABLE_SSL" == true ]]; then
   NODE_CONFIG=$(echo "$NODE_CONFIG" | jq \
     --arg cert "/etc/letsencrypt/live/${DOMAIN_WINGS}/fullchain.pem" \
@@ -448,18 +499,18 @@ if [[ "$ENABLE_SSL" == true ]]; then
     '.api.ssl.enabled = true | .api.ssl.cert = $cert | .api.ssl.key = $key')
 fi
 
-# 3b. Inject allowed_origins (domain panel)
+# 3b. allowed_origins
 NODE_CONFIG=$(echo "$NODE_CONFIG" | jq \
   --arg panel "${APP_SCHEME}://${DOMAIN_PANEL}" \
   '.allowed_origins = [$panel]')
 
-# 3c. Force allowed_mounts jadi empty list
+# 3c. allowed_mounts must be []
 NODE_CONFIG=$(echo "$NODE_CONFIG" | jq '.allowed_mounts = []')
 
 mkdir -p /etc/pterodactyl
 echo "$NODE_CONFIG" > /etc/pterodactyl/config.json
 
-# Convert JSON -> YAML
+# --- JSON to YAML ---
 php -r '
   $json = json_decode(file_get_contents("/etc/pterodactyl/config.json"), true);
   if ($json === null) {
@@ -467,7 +518,6 @@ php -r '
       exit(1);
   }
 
-  // Paksa list untuk field yang di Wings bertipe []string
   foreach (["allowed_mounts", "allowed_origins"] as $k) {
       if (!isset($json[$k]) || !is_array($json[$k])) {
           $json[$k] = [];
@@ -555,7 +605,7 @@ EOF
 systemctl daemon-reload
 systemctl enable --now wings
 
-# Sanity check: pastikan Wings benar-benar hidup
+# --- Health check ---
 sleep 4
 if ! systemctl is-active --quiet wings; then
   warn "Wings gagal start. Berikut log terakhirnya:"
