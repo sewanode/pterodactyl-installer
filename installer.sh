@@ -3,11 +3,11 @@
 #  Pterodactyl Auto-Installer
 #  -------------------------------------------------------------
 #  One-command installer for Pterodactyl Panel + Wings with
-#  automatic Let's Encrypt SSL, node auto-registration, and
-#  Indonesian APT mirror support.
+#  automatic Let's Encrypt SSL, node auto-registration,
+#  auto-allocation provisioning, and Indonesian APT mirror support.
 #
 #  Author  : Sewanode <https://github.com/Sewanode>
-#  Version : 1.0.0
+#  Version : 1.1.0
 #  License : MIT
 #
 #  Usage:
@@ -56,6 +56,8 @@ SFTPPORT=2482
 ENABLE_SSL=false
 TIMEZONE="Asia/Jakarta"
 USE_ID_MIRROR=true
+ALLOC_RANGE="3000-3999"
+ALLOC_ALIAS="Sewanode Auto"
 
 # --- CLI Arguments Parser ---
 while [[ "$#" -gt 0 ]]; do
@@ -69,6 +71,8 @@ while [[ "$#" -gt 0 ]]; do
     --timezone)     TIMEZONE="$2"; shift ;;
     --ssl)          ENABLE_SSL=true ;;
     --no-id-mirror) USE_ID_MIRROR=false ;;
+    --allocrange)   ALLOC_RANGE="$2"; shift ;;
+    --allocalias)   ALLOC_ALIAS="$2"; shift ;;
     -h|--help)
       cat << 'EOF'
 Usage:
@@ -76,6 +80,7 @@ Usage:
                --email <admin@email> --pass <secret>
                [--dport <port>] [--sftpport <port>]
                [--timezone <tz>] [--ssl] [--no-id-mirror]
+               [--allocrange <range>] [--allocalias <name>]
 
 Flags:
   --domainp       Panel domain                    (required)
@@ -87,6 +92,8 @@ Flags:
   --timezone      Panel timezone                  (default: Asia/Jakarta)
   --ssl           Enable Let's Encrypt SSL        (default: false)
   --no-id-mirror  Skip Indonesian APT mirror
+  --allocrange    Allocation port range           (default: 3000-3999)
+  --allocalias    Allocation IP alias             (default: Sewanode Auto)
 EOF
       exit 0 ;;
     *) echo "Unknown parameter: $1"; exit 1 ;;
@@ -122,7 +129,7 @@ esac
 OS_ID=$(echo "$ID" | tr '[:upper:]' '[:lower:]')
 OS_CODENAME=$(lsb_release -cs 2>/dev/null || echo "$VERSION_CODENAME")
 
-info "[1/8] Menyiapkan repositori sistem..."
+info "[1/9] Menyiapkan repositori sistem..."
 
 # --- Indonesian APT mirror ---
 if [[ "$USE_ID_MIRROR" == true ]]; then
@@ -174,7 +181,7 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.
 
 apt-get update -y -qq
 
-info "[2/8] Menginstal paket dependencies & Docker..."
+info "[2/9] Menginstal paket dependencies & Docker..."
 apt-get install -y -qq \
   -o Dpkg::Options::=--force-confdef \
   -o Dpkg::Options::=--force-confold \
@@ -184,7 +191,7 @@ apt-get install -y -qq \
 
 systemctl enable --now mariadb redis-server nginx php8.3-fpm docker
 
-info "[3/8] Mengonfigurasi MariaDB..."
+info "[3/9] Mengonfigurasi MariaDB..."
 DB_NAME="panel"
 DB_USER="pterodactyl"
 DB_PASS=$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 24)
@@ -194,7 +201,7 @@ mariadb -u root -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'127.0.0.1' IDENTIFIE
 mariadb -u root -e "GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'127.0.0.1' WITH GRANT OPTION;"
 mariadb -u root -e "FLUSH PRIVILEGES;"
 
-info "[4/8] Mengunduh dan memasang Panel..."
+info "[4/9] Mengunduh dan memasang Panel..."
 curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 
 mkdir -p /var/www/pterodactyl
@@ -313,7 +320,7 @@ rm -f /etc/nginx/sites-enabled/default
 ln -sf /etc/nginx/sites-available/pterodactyl.conf /etc/nginx/sites-enabled/pterodactyl.conf
 nginx -t && systemctl reload nginx
 
-info "[5/8] Konfigurasi SSL Let's Encrypt..."
+info "[5/9] Konfigurasi SSL Let's Encrypt..."
 if [[ "$ENABLE_SSL" == true ]]; then
   certbot certonly --webroot -w /var/www/pterodactyl/public \
     --non-interactive --agree-tos --email "${ADMIN_EMAIL}" \
@@ -385,7 +392,7 @@ EOF
   nginx -t && systemctl reload nginx
 fi
 
-info "[6/8] Membuat Application API Key via artisan tinker..."
+info "[6/9] Membuat Application API Key via artisan tinker..."
 TINKER_OUT=$(php artisan tinker --execute='
   $key = new \Pterodactyl\Models\ApiKey();
   $key->user_id = 1;
@@ -437,7 +444,7 @@ api_request() {
   curl "${args[@]}"
 }
 
-info "[7/8] Mendaftarkan Location & Node ke Panel API..."
+info "[7/9] Mendaftarkan Location & Node ke Panel API..."
 
 # 1. Location
 LOC_RESP=$(api_request POST "/api/application/locations" '{"short": "local", "long": "Local Node"}')
@@ -574,7 +581,30 @@ php -r '
 '
 rm -f /etc/pterodactyl/config.json
 
-info "[8/8] Memasang Wings & Service..."
+info "[8/9] Membuat auto-allocation ports ${ALLOC_RANGE}..."
+
+# Allocation payload: IP 0.0.0.0 = semua interface, alias custom, range port
+ALLOC_PAYLOAD=$(jq -n \
+  --arg ip "0.0.0.0" \
+  --arg alias "${ALLOC_ALIAS}" \
+  --arg range "${ALLOC_RANGE}" \
+  '{ip: $ip, alias: $alias, ports: [$range]}')
+
+ALLOC_RESP=$(api_request POST "/api/application/nodes/${NODE_ID}/allocations" "$ALLOC_PAYLOAD")
+
+# Hitung jumlah allocation yang dibuat (response berupa list di .data)
+ALLOC_COUNT=$(echo "$ALLOC_RESP" | jq -r 'if .data then (.data | length) else 0 end' 2>/dev/null || echo 0)
+
+if [[ "$ALLOC_COUNT" -gt 0 ]]; then
+  info "Berhasil membuat ${ALLOC_COUNT} allocations (${ALLOC_RANGE}) dengan alias '${ALLOC_ALIAS}'."
+else
+  warn "Gagal atau tidak ada allocation yang dibuat. Response:"
+  echo "$ALLOC_RESP" | head -c 500
+  echo
+  warn "Lanjut ke step berikutnya. Kamu bisa create allocation manual lewat Panel."
+fi
+
+info "[9/9] Memasang Wings & Service..."
 curl -sSL -o /usr/local/bin/wings "https://github.com/pterodactyl/wings/releases/latest/download/wings_linux_${WINGS_ARCH}"
 chmod u+x /usr/local/bin/wings
 
@@ -617,9 +647,11 @@ echo "127.0.0.1 ${DOMAIN_WINGS}" | tee -a /etc/hosts >/dev/null
 
 echo "=========================================================="
 echo -e "${GREEN}Instalasi Berhasil!${NC}"
-echo "Panel URL   : ${APP_SCHEME}://${DOMAIN_PANEL}"
-echo "Wings Node  : ${DOMAIN_WINGS} (Daemon: ${DPORT}, SFTP: ${SFTPPORT})"
-echo "Admin       : ${ADMIN_EMAIL}"
-echo "Password    : ${ADMIN_PASS}"
-echo "Wings State : $(systemctl is-active wings)"
+echo "Panel URL       : ${APP_SCHEME}://${DOMAIN_PANEL}"
+echo "Wings Node      : ${DOMAIN_WINGS} (Daemon: ${DPORT}, SFTP: ${SFTPPORT})"
+echo "Admin           : ${ADMIN_EMAIL}"
+echo "Password        : ${ADMIN_PASS}"
+echo "Wings State     : $(systemctl is-active wings)"
+echo "Allocations     : ${ALLOC_COUNT} port (${ALLOC_RANGE})"
+echo "Allocation Alias: ${ALLOC_ALIAS}"
 echo "=========================================================="
